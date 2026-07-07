@@ -89,30 +89,35 @@ def run_backtest(prices, w_l2, w_0050, w_cash, init):
 # ── UI ───────────────────────────────────────────────────────────────────
 
 st.markdown("### 投入配置")
-col1, col2, col3 = st.columns(3)
-with col1:
-    amt_l2   = st.number_input("00631L（萬元）", min_value=0, value=1500, step=100)
-with col2:
-    amt_0050 = st.number_input("0050（萬元）",   min_value=0, value=0,    step=100)
-with col3:
-    amt_cash = st.number_input("現金（萬元）",   min_value=0, value=500,  step=100)
+st.caption("最多可同時比較 3 個策略，留空（三欄皆為 0）表示不啟用該策略")
 
-total_init = amt_l2 + amt_0050 + amt_cash
+STRATEGY_DEFAULTS = [
+    ("策略 A", 1500, 0,   500),
+    ("策略 B", 1200, 600, 200),
+    ("策略 C", 0,    2000, 0),
+]
 
-if total_init == 0:
-    st.warning("請輸入至少一項金額")
+strategies = []
+for label, d_l2, d_0050, d_cash in STRATEGY_DEFAULTS:
+    st.markdown(f"**{label}**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        l2   = st.number_input("00631L（萬元）", min_value=0, value=d_l2,   step=100, key=f"{label}_l2")
+    with c2:
+        o50  = st.number_input("0050（萬元）",   min_value=0, value=d_0050, step=100, key=f"{label}_0050")
+    with c3:
+        cash = st.number_input("現金（萬元）",   min_value=0, value=d_cash, step=100, key=f"{label}_cash")
+    total = l2 + o50 + cash
+    if total > 0:
+        wl = l2 / total; w5 = o50 / total; wc = cash / total
+        lev = wl * 2 + w5
+        st.caption(f"總資金 {total:,} 萬　｜　00631L {wl*100:.0f}%　0050 {w5*100:.0f}%　現金 {wc*100:.0f}%　｜　槓桿 **{lev:.2f}x**")
+        strategies.append((label, total, wl, w5, wc))
+    st.divider()
+
+if not strategies:
+    st.warning("請至少填入一個策略")
     st.stop()
-
-w_l2   = amt_l2   / total_init
-w_0050 = amt_0050 / total_init
-w_cash = amt_cash / total_init
-
-leverage = w_l2 * 2 + w_0050 * 1
-st.info(
-    f"**總資金：{total_init:,} 萬元**　｜　"
-    f"00631L {w_l2*100:.1f}%　0050 {w_0050*100:.1f}%　現金 {w_cash*100:.1f}%　｜　"
-    f"**組合槓桿：{leverage:.2f}x**"
-)
 
 run = st.button("▶ 開始回測", type="primary", use_container_width=True)
 
@@ -135,83 +140,55 @@ if run:
         p_l2_raw = load_l2()
         p_0050   = load_0050()
         prices   = build_prices(p_l2_raw, p_0050)
-
-        # 自訂策略
-        s_custom = run_backtest(prices, w_l2, w_0050, w_cash, total_init * 1e4)
-        # 四個標準方案（同比例本金）
-        presets_series = {
-            name: run_backtest(prices, wl, w5, wc, total_init * 1e4)
-            for name, wl, w5, wc in PRESETS
-        }
+        results = {}
+        for label, total, wl, w5, wc in strategies:
+            results[label] = run_backtest(prices, wl, w5, wc, total * 1e4)
 
     st.markdown("---")
     st.markdown("### 回測結果（2014/10/31 → 2026/07/07，每年底再平衡）")
 
-    # ── 自訂配置指標
-    final  = s_custom.iloc[-1]
-    mdd    = calc_mdd(s_custom.values)
-    lowest = s_custom.min()
-    low_d  = s_custom.idxmin().date()
-    ret    = final / (total_init * 1e4) - 1
-
-    st.markdown(f"#### 你的配置（00631L {w_l2*100:.0f}% ／ 0050 {w_0050*100:.0f}% ／ 現金 {w_cash*100:.0f}%，槓桿 {leverage:.2f}x）")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("最終資產", fmt_asset(final))
-    m2.metric("總漲幅",   f"{ret*100:+.1f}%")
-    m3.metric("最大回撤", f"{mdd*100:.1f}%")
-    m4.metric("最低點",   f"{fmt_asset(lowest)}（{low_d}）")
-
-    # ── 策略比較表
-    st.markdown("#### 策略比較")
+    # ── 比較總表
     rows = []
-    for name, wl, w5, wc in PRESETS:
-        s = presets_series[name]
-        lev = wl * 2 + w5
+    for label, total, wl, w5, wc in strategies:
+        s   = results[label]
         f   = s.iloc[-1]
-        r   = f / (total_init * 1e4) - 1
+        r   = f / (total * 1e4) - 1
         m   = calc_mdd(s.values)
         lo  = s.min()
         lod = s.idxmin().date()
+        lev = wl * 2 + w5
         rows.append({
-            "配置": name,
-            "槓桿": f"{lev:.1f}x",
+            "策略": label,
+            "配置": f"正二{wl*100:.0f}% / 0050 {w5*100:.0f}% / 現金{wc*100:.0f}%",
+            "槓桿": f"{lev:.2f}x",
+            "本金（萬）": f"{total:,}",
             "最終資產": fmt_asset(f),
             "總漲幅": f"{r*100:+.1f}%",
             "最大回撤": f"{m*100:.1f}%",
             "最低點": f"{fmt_asset(lo)}（{lod}）",
         })
-    # 加入自訂配置
-    rows.insert(0, {
-        "配置": f"★ 自訂（{w_l2*100:.0f}%正二/{w_0050*100:.0f}%0050/{w_cash*100:.0f}%現金）",
-        "槓桿": f"{leverage:.2f}x",
-        "最終資產": fmt_asset(final),
-        "總漲幅": f"{ret*100:+.1f}%",
-        "最大回撤": f"{mdd*100:.1f}%",
-        "最低點": f"{fmt_asset(lowest)}（{low_d}）",
-    })
-    st.dataframe(pd.DataFrame(rows).set_index("配置"), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows).set_index("策略"), use_container_width=True)
 
-    # ── 年度明細
+    # ── 年度明細（萬元）
     st.markdown("#### 各年度年末資產（萬元）")
     yearly = {}
-    for yr in sorted(set(s_custom.index.year)):
+    for yr in sorted(set(prices.index.year)):
         row = {}
-        sub = s_custom[s_custom.index.year == yr]
-        row["★ 自訂"] = round(sub.iloc[-1] / 1e4, 1) if len(sub) else None
-        for name, wl, w5, wc in PRESETS:
-            sub2 = presets_series[name]
-            sub2 = sub2[sub2.index.year == yr]
-            row[name[:8]] = round(sub2.iloc[-1] / 1e4, 1) if len(sub2) else None
+        for label, total, wl, w5, wc in strategies:
+            sub = results[label]
+            sub = sub[sub.index.year == yr]
+            row[label] = round(sub.iloc[-1] / 1e4, 1) if len(sub) else None
         yearly[yr] = row
     df_yr = pd.DataFrame(yearly).T
     df_yr.index.name = "年份"
     st.dataframe(df_yr, use_container_width=True)
 
-    # ── 走勢圖
-    st.markdown("#### 資產走勢（萬元）")
-    chart_data = pd.DataFrame({"★ 自訂": s_custom / 1e4})
-    for name, wl, w5, wc in PRESETS:
-        chart_data[name[:8]] = presets_series[name] / 1e4
+    # ── 走勢圖（統一以各自本金=100為基準，比較相對報酬）
+    st.markdown("#### 資產走勢（以本金為基準，倍數）")
+    chart_data = pd.DataFrame({
+        label: results[label] / (total * 1e4)
+        for label, total, wl, w5, wc in strategies
+    })
     st.line_chart(chart_data)
 
     st.caption(f"回測起點 {prices.index[0].date()}，共 {len(prices)} 個交易日")
