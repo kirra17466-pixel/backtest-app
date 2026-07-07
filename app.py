@@ -7,6 +7,7 @@ from pathlib import Path
 st.set_page_config(page_title="台股策略回測", page_icon="📈", layout="centered")
 st.title("📈 台股策略回測工具")
 st.caption("資料來源：00631L = 台灣證交所官方 ｜ 0050 = yfinance 含息還原")
+st.info("📅 回測區間：**2014/10/31（00631L 掛牌日）→ 2026/07/07**　｜　每年最後一個交易日執行再平衡")
 
 # ── 資料載入（快取）────────────────────────────────────────────────────────
 
