@@ -116,46 +116,102 @@ st.info(
 
 run = st.button("▶ 開始回測", type="primary", use_container_width=True)
 
+def fmt_asset(val_twd):
+    """格式化資產金額"""
+    yi = val_twd / 1e8
+    if yi >= 1:
+        return f"{yi:.2f} 億"
+    return f"{val_twd/1e4:,.0f} 萬"
+
+PRESETS = [
+    ("75%正二 + 25%現金",          0.75, 0.00, 0.25),
+    ("60%正二 + 30%0050 + 10%現金", 0.60, 0.30, 0.10),
+    ("100% 00631L",                 1.00, 0.00, 0.00),
+    ("100% 0050",                   0.00, 1.00, 0.00),
+]
+
 if run:
     with st.spinner("計算中..."):
         p_l2_raw = load_l2()
         p_0050   = load_0050()
         prices   = build_prices(p_l2_raw, p_0050)
 
-        s = run_backtest(prices, w_l2, w_0050, w_cash, total_init * 1e4)
-
-    final  = s.iloc[-1]
-    mdd    = calc_mdd(s.values)
-    lowest = s.min()
-    low_d  = s.idxmin().date()
-    ret    = final / (total_init * 1e4) - 1
+        # 自訂策略
+        s_custom = run_backtest(prices, w_l2, w_0050, w_cash, total_init * 1e4)
+        # 四個標準方案（同比例本金）
+        presets_series = {
+            name: run_backtest(prices, wl, w5, wc, total_init * 1e4)
+            for name, wl, w5, wc in PRESETS
+        }
 
     st.markdown("---")
     st.markdown("### 回測結果（2014/10/31 → 2026/07/07，每年底再平衡）")
 
+    # ── 自訂配置指標
+    final  = s_custom.iloc[-1]
+    mdd    = calc_mdd(s_custom.values)
+    lowest = s_custom.min()
+    low_d  = s_custom.idxmin().date()
+    ret    = final / (total_init * 1e4) - 1
+
+    st.markdown(f"#### 你的配置（00631L {w_l2*100:.0f}% ／ 0050 {w_0050*100:.0f}% ／ 現金 {w_cash*100:.0f}%，槓桿 {leverage:.2f}x）")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("最終資產", f"{final/1e4:,.0f} 萬元")
+    m1.metric("最終資產", fmt_asset(final))
     m2.metric("總漲幅",   f"{ret*100:+.1f}%")
     m3.metric("最大回撤", f"{mdd*100:.1f}%")
-    m4.metric("最低點",   f"{lowest/1e4:,.0f} 萬（{low_d}）")
+    m4.metric("最低點",   f"{fmt_asset(lowest)}（{low_d}）")
 
-    # 年度表
-    st.markdown("#### 各年度年末資產")
+    # ── 策略比較表
+    st.markdown("#### 策略比較")
+    rows = []
+    for name, wl, w5, wc in PRESETS:
+        s = presets_series[name]
+        lev = wl * 2 + w5
+        f   = s.iloc[-1]
+        r   = f / (total_init * 1e4) - 1
+        m   = calc_mdd(s.values)
+        lo  = s.min()
+        lod = s.idxmin().date()
+        rows.append({
+            "配置": name,
+            "槓桿": f"{lev:.1f}x",
+            "最終資產": fmt_asset(f),
+            "總漲幅": f"{r*100:+.1f}%",
+            "最大回撤": f"{m*100:.1f}%",
+            "最低點": f"{fmt_asset(lo)}（{lod}）",
+        })
+    # 加入自訂配置
+    rows.insert(0, {
+        "配置": f"★ 自訂（{w_l2*100:.0f}%正二/{w_0050*100:.0f}%0050/{w_cash*100:.0f}%現金）",
+        "槓桿": f"{leverage:.2f}x",
+        "最終資產": fmt_asset(final),
+        "總漲幅": f"{ret*100:+.1f}%",
+        "最大回撤": f"{mdd*100:.1f}%",
+        "最低點": f"{fmt_asset(lowest)}（{low_d}）",
+    })
+    st.dataframe(pd.DataFrame(rows).set_index("配置"), use_container_width=True)
+
+    # ── 年度明細
+    st.markdown("#### 各年度年末資產（萬元）")
     yearly = {}
-    for yr in sorted(set(s.index.year)):
-        sub = s[s.index.year == yr]
-        if len(sub):
-            yearly[yr] = {
-                "年末資產（萬元）": round(sub.iloc[-1] / 1e4, 1),
-                "當年漲跌":        f"{(sub.iloc[-1]/sub.iloc[0] - 1)*100:+.1f}%"
-            }
+    for yr in sorted(set(s_custom.index.year)):
+        row = {}
+        sub = s_custom[s_custom.index.year == yr]
+        row["★ 自訂"] = round(sub.iloc[-1] / 1e4, 1) if len(sub) else None
+        for name, wl, w5, wc in PRESETS:
+            sub2 = presets_series[name]
+            sub2 = sub2[sub2.index.year == yr]
+            row[name[:8]] = round(sub2.iloc[-1] / 1e4, 1) if len(sub2) else None
+        yearly[yr] = row
     df_yr = pd.DataFrame(yearly).T
     df_yr.index.name = "年份"
     st.dataframe(df_yr, use_container_width=True)
 
-    # 走勢圖
-    st.markdown("#### 資產走勢")
-    chart = (s / 1e4).rename("資產（萬元）")
-    st.line_chart(chart)
+    # ── 走勢圖
+    st.markdown("#### 資產走勢（萬元）")
+    chart_data = pd.DataFrame({"★ 自訂": s_custom / 1e4})
+    for name, wl, w5, wc in PRESETS:
+        chart_data[name[:8]] = presets_series[name] / 1e4
+    st.line_chart(chart_data)
 
-    st.caption(f"回測起點 {prices.index[0].date()}，共 {len(prices)} 個交易日，每年最後一個交易日執行再平衡")
+    st.caption(f"回測起點 {prices.index[0].date()}，共 {len(prices)} 個交易日")
